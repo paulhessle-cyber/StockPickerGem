@@ -280,6 +280,7 @@
                     if (response.status === 401) {
                         throw new Error("401 Unauthorized: API Key is invalid or missing.");
                     }
+                    // Throw a specific error for 403
                     if (response.status === 403) {
                         throw new Error("403 Forbidden: The API call was blocked. If running from a browser (like GitHub Pages), you must configure API Key Restrictions to allow your specific domain (Referrer).");
                     }
@@ -389,8 +390,9 @@
                 finalError = error.message;
             }
 
-            // Fallback to Mock Data if API call failed or was skipped
-            if (!success || finalError.includes("401 Unauthorized") || finalError.includes("403 Forbidden")) {
+            // Fallback to Mock Data if API call failed or was skipped due to Auth errors (401, 403)
+            // Check for the status codes 401 or 403 appearing in the final error message
+            if (!success && (finalError.includes("401") || finalError.includes("403") || finalError.includes("API Key not found"))) {
                 stocks = MOCK_STOCKS;
                 success = true;
                 // Preserve the original error message but show the mock data
@@ -421,6 +423,7 @@
          * @param {boolean} isMarketOpen - True if the US market is currently open.
          */
         function renderStockResults(stocks, sources, isMarketOpen) {
+            // Determine the header color based on US market open status
             const marketHeaderColor = isMarketOpen ? 'text-green-400' : 'text-teal-400';
             const marketBorderColor = isMarketOpen ? 'border-green-500' : 'border-indigo-500';
 
@@ -428,7 +431,7 @@
 
             stocks.forEach(stock => {
                 let colorClass;
-                // Use volatility for the internal badge, keep the main border/header for market status
+                // Use volatility for the internal badge
                 switch (stock.volatilityLevel.toLowerCase()) {
                     case 'high':
                         colorClass = 'text-red-400 border-red-400';
