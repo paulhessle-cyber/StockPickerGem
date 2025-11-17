@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Market Day Trader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for a dark, professional trading interface */
+        :root {
+            --green: #10b981; /* Tailwind green-500 */
+            --red: #ef4444;   /* Tailwind red-500 */
+            --yellow: #f59e0b; /* Tailwind amber-500 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            background-color: #111827; /* Gray-900 equivalent */
+            color: #f3f4f6; /* Gray-100 equivalent */
+        }
+        .market-card {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+        .market-card:hover {
+            transform: translateY(-2px);
+        }
+        .open-status { background-color: var(--green); }
+        .closed-status { background-color: var(--red); }
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <header class="mb-8 text-center">
+        <h1 class="text-3xl font-bold text-teal-400 mb-2">Day Trader Dashboard</h1>
+        <div id="currentDateTime" class="text-xl font-medium text-gray-300">Loading Time...</div>
+    </header>
+
+    <!-- Market Status Section -->
+    <section class="mb-10">
+        <h2 class="text-xl font-semibold mb-4 text-gray-200">Global Market Status (UTC Time)</h2>
+        <div id="market-status-container" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- Market cards will be populated here -->
+        </div>
+    </section>
+
+    <!-- Stock Picker Section -->
+    <section class="mb-10">
+        <h2 class="text-xl font-semibold mb-4 text-gray-200">Today's Day Trade Picks</h2>
+        <button id="fetchStocksBtn"
+                class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition duration-150 ease-in-out flex items-center justify-center disabled:opacity-50"
+                onclick="fetchDayTradeStocks()">
+            <span id="buttonText">Find 5 High-Potential Stocks Now</span>
+            <div id="loadingSpinner" class="loader ml-3 hidden"></div>
+        </button>
+
+        <div id="stockRecommendations" class="mt-6 space-y-4">
+            <p id="initialMessage" class="text-gray-400 text-center italic">Press the button to analyze current market conditions and generate 5 day trade recommendations.</p>
+        </div>
+        <div id="errorMessage" class="hidden mt-4 bg-red-800 p-3 rounded-lg text-sm text-red-200"></div>
+    </section>
+
+    <script type="module">
+        // Global Constants
+        const MARKET_DATA = {
+            'Tokyo (TSE)': {
+                local: 'Asia/Tokyo',
+                open: {h: 0, m: 0}, // 9:00 AM JST = 00:00 UTC
+                close: {h: 6, m: 0}, // 3:00 PM JST = 06:00 UTC
+                lunchStart: {h: 2, m: 30}, // 11:30 AM JST = 02:30 UTC
+                lunchEnd: {h: 3, m: 30} // 12:30 PM JST = 03:30 UTC
+            },
+            'London (LSE)': {
+                local: 'Europe/London',
+                open: {h: 8, m: 0}, // 8:00 AM GMT = 08:00 UTC
+                close: {h: 16, m: 30}, // 4:30 PM GMT = 16:30 UTC
+            },
+            'US (NYSE/NASDAQ)': {
+                local: 'America/New_York',
+                open: {h: 14, m: 30}, // 9:30 AM EST = 14:30 UTC
+                close: {h: 21, m: 0}, // 4:00 PM EST = 21:00 UTC
+            }
+        };
+
+        const currentDateTimeEl = document.getElementById('currentDateTime');
+        const marketStatusContainer = document.getElementById('market-status-container');
+        const fetchStocksBtn = document.getElementById('fetchStocksBtn');
+        const buttonTextEl = document.getElementById('buttonText');
+        const loadingSpinnerEl = document.getElementById('loadingSpinner');
+        const stockRecommendationsEl = document.getElementById('stockRecommendations');
+        const initialMessageEl = document.getElementById('initialMessage');
+        const errorMessageEl = document.getElementById('errorMessage');
+
+        /**
+         * Utility function to format time difference.
+         * @param {number} diffMs - Difference in milliseconds.
+         * @returns {string} Formatted string.
+         */
+        function formatTimeDiff(diffMs) {
+            const totalSeconds = Math.floor(diffMs / 1000);
+            const totalMinutes = Math.floor(totalSeconds / 60);
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            const seconds = totalSeconds % 60;
+            
+            if (hours > 24) return `in ${Math.ceil(hours / 24)} days`;
+            
+            let parts = [];
+            if (hours > 0) parts.push(`${hours}h`);
+            if (minutes > 0) parts.push(`${minutes}m`);
+            parts.push(`${seconds}s`);
+            
+            return parts.join(' ');
+        }
+
+        /**
+         * Calculates the market status (Open, Closed, or Lunch) and time until next open/close.
+         * @param {Date} nowUtc - The current time in UTC.
+         * @param {object} market - The market data configuration.
+         * @returns {{status: string, timeText: string, statusClass: string}}
+         */
+        function getMarketStatus(nowUtc, market) {
+            const nowDay = nowUtc.getUTCDay(); // 0 (Sun) to 6 (Sat)
+            
+            // Check if it's a weekend (Sat or Sun)
+            if (nowDay === 0 || nowDay === 6) {
+                return { 
+                    status: 'Closed', 
+                    timeText: 'Weekend Break', 
+                    statusClass: 'bg-red-600' 
+                };
+            }
+            
+            const marketOpen = new Date(nowUtc);
+            marketOpen.setUTCHours(market.open.h, market.open.m, 0, 0);
+
+            const marketClose = new Date(nowUtc);
+            marketClose.setUTCHours(market.close.h, market.close.m, 0, 0);
+
+            // Handle lunch break for TSE
+            if (market.lunchStart && market.lunchEnd) {
+                const lunchStart = new Date(nowUtc);
+                lunchStart.setUTCHours(market.lunchStart.h, market.lunchStart.m, 0, 0);
+                const lunchEnd = new Date(nowUtc);
+                lunchEnd.setUTCHours(market.lunchEnd.h, market.lunchEnd.m, 0, 0);
+
+                if (nowUtc >= lunchStart && nowUtc < lunchEnd) {
+                    const diffMs = lunchEnd - nowUtc;
+                    return { 
+                        status: 'Lunch Break', 
+                        timeText: `Resumes in ${formatTimeDiff(diffMs)}`, 
+                        statusClass: 'bg-amber-500' 
+                    };
+                }
+            }
+
+            // Market is Open
+            if (nowUtc >= marketOpen && nowUtc < marketClose) {
+                const diffMs = marketClose - nowUtc;
+                return { 
+                    status: 'Open', 
+                    timeText: `Closes in ${formatTimeDiff(diffMs)}`, 
+                    statusClass: 'bg-green-600' 
+                };
+            }
+            
+            // Market is Closed (before open or after close)
+            let nextOpen = marketOpen;
+            
+            if (nowUtc >= marketClose) {
+                // Closed for the day, calculate next open time (tomorrow or Monday)
+                nextOpen.setDate(nextOpen.getDate() + 1);
+                
+                // Adjust for weekends if next open is Sat/Sun
+                let day = nextOpen.getUTCDay();
+                if (day === 6) nextOpen.setDate(nextOpen.getDate() + 2); // Skip Sat & Sun
+                else if (day === 0) nextOpen.setDate(nextOpen.getDate() + 1); // Skip Sun
+            }
+            
+            // Calculate time until next open
+            let diffMs = nextOpen - nowUtc;
+            
+            if (diffMs < 0) { // Safety check for edge case near midnight
+                 nextOpen.setDate(nextOpen.getDate() + 1);
+                 diffMs = nextOpen - nowUtc;
+            }
+
+            return { 
+                status: 'Closed', 
+                timeText: `Opens in ${formatTimeDiff(diffMs)}`, 
+                statusClass: 'bg-red-600' 
+            };
+        }
+
+        /**
+         * Updates the current time and market status every second.
+         */
+        function updateTimeAndMarkets() {
+            const now = new Date();
+            const nowUtc = new Date(now.getTime() + now.getTimezoneOffset() * 60000); // Convert to UTC
+            
+            // 1. Update Current Time Display (Local Time)
+            currentDateTimeEl.textContent = now.toLocaleString(undefined, {
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric', 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit',
+                timeZoneName: 'short'
+            });
+
+            // 2. Update Market Status Cards
+            marketStatusContainer.innerHTML = ''; // Clear existing cards
+
+            for (const [name, market] of Object.entries(MARKET_DATA)) {
+                const { status, timeText, statusClass } = getMarketStatus(nowUtc, market);
+
+                const cardHtml = `
+                    <div class="market-card p-4 rounded-xl border border-gray-700 bg-gray-800">
+                        <h3 class="text-lg font-bold text-gray-100 mb-1">${name}</h3>
+                        <div class="flex items-center space-x-2 mb-2">
+                            <span class="px-3 py-1 text-xs font-semibold rounded-full ${statusClass}">${status}</span>
+                            <span class="text-sm text-gray-400 font-mono italic">(${market.open.h.toString().padStart(2, '0')}:${market.open.m.toString().padStart(2, '0')} - ${market.close.h.toString().padStart(2, '0')}:${market.close.m.toString().padStart(2, '0')} UTC)</span>
+                        </div>
+                        <p class="text-md font-semibold text-gray-300">${timeText}</p>
+                    </div>
+                `;
+                marketStatusContainer.insertAdjacentHTML('beforeend', cardHtml);
+            }
+        }
+
+        // Start the clock and market status updates
+        setInterval(updateTimeAndMarkets, 1000);
+        updateTimeAndMarkets(); // Initial call
+
+        // --- Stock Recommendation Logic (Gemini API) ---
+
+        /**
+         * Fetches API content with exponential backoff for retries.
+         * @param {string} url - API endpoint URL.
+         * @param {object} options - Fetch options (method, headers, body).
+         * @param {number} retries - Maximum number of retries.
+         * @returns {Promise<Response>} The successful fetch response.
+         */
+        async function retryFetch(url, options, retries = 3) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.status === 401) {
+                        // Do not retry 401 errors, as the key is fundamentally wrong
+                        throw new Error("401 Unauthorized: API Key is invalid or missing.");
+                    }
+                    if (response.ok) {
+                        return response;
+                    }
+                    // For other temporary errors (5xx, 429), proceed to retry
+                    throw new Error(`Non-ok response status: ${response.status}`);
+                } catch (error) {
+                    if (i === retries - 1) {
+                        throw error;
+                    }
+                    // Exponential backoff wait: 1s, 2s, 4s
+                    const delay = Math.pow(2, i) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+
+        window.fetchDayTradeStocks = async function() {
+            if (fetchStocksBtn.disabled) return;
+            
+            // Show loading state
+            fetchStocksBtn.disabled = true;
+            buttonTextEl.textContent = 'Analyzing Markets...';
+            loadingSpinnerEl.classList.remove('hidden');
+            initialMessageEl.classList.add('hidden');
+            stockRecommendationsEl.innerHTML = '';
+            errorMessageEl.classList.add('hidden');
+            errorMessageEl.textContent = '';
+
+            const systemPrompt = "You are a specialized day-trading algorithm and financial analyst. Your task is to select 5 stocks (common US-listed tickers) that are currently exhibiting high potential for a day trade. Base your recommendation on real-time market data (via the Google Search tool), focusing on high volatility, heavy volume, breaking news, and strong technical setups. Only respond with a JSON array that strictly adheres to the provided schema. DO NOT include any introductory or concluding text outside the JSON structure.";
+            
+            const userQuery = "Identify 5 US-listed stocks that are currently the best candidates for aggressive day trading based on volatility, news catalyst, and intraday volume.";
+            
+            const schema = {
+                type: "ARRAY",
+                description: "A list of 5 recommended day-trading stocks.",
+                items: {
+                    type: "OBJECT",
+                    properties: {
+                        "ticker": { "type": "STRING", "description": "The stock ticker symbol (e.g., TSLA, NVDA)." },
+                        "reason": { "type": "STRING", "description": "A concise, 1-sentence reason for recommending the stock for day trading (e.g., High pre-market volume due to earnings beat or sector rotation)." },
+                        "volatilityLevel": { "type": "STRING", "description": "The assessed volatility level (High, Medium, or Low)." }
+                    },
+                    "required": ["ticker", "reason", "volatilityLevel"]
+                }
+            };
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: schema
+                }
+            };
+            
+            const apiKey = ""; // The Canvas environment should populate this key automatically.
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            
+            let stocks = [];
+            let sources = [];
+            let success = false;
+            let finalError = "An unknown error occurred.";
+
+            try {
+                // Use the retryFetch wrapper
+                const response = await retryFetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const jsonText = candidate.content.parts[0].text;
+                    stocks = JSON.parse(jsonText);
+                    success = true;
+
+                    // Extract grounding sources
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions.map(attribution => ({
+                            uri: attribution.web?.uri,
+                            title: attribution.web?.title,
+                        })).filter(source => source.uri && source.title);
+                    }
+                } else {
+                    finalError = "Received an invalid or empty response from the recommendation engine.";
+                }
+
+            } catch (error) {
+                console.error("Fetch error:", error);
+                // Catch the specific 401 message from retryFetch
+                finalError = error.message.includes("401 Unauthorized") 
+                    ? "Authentication Error: The API Key is invalid or missing. Please ensure your API key is correctly configured for this environment."
+                    : `Could not fetch recommendations: ${error.message}.`;
+            }
+
+            // Restore button state
+            fetchStocksBtn.disabled = false;
+            loadingSpinnerEl.classList.add('hidden');
+            buttonTextEl.textContent = 'Find 5 High-Potential Stocks Now';
+
+            // Render results
+            if (success && stocks.length > 0) {
+                renderStockResults(stocks, sources);
+            } else {
+                errorMessageEl.textContent = finalError;
+                errorMessageEl.classList.remove('hidden');
+            }
+        }
+
+        /**
+         * Renders the stock recommendations and sources.
+         * @param {Array<object>} stocks - List of stock objects.
+         * @param {Array<object>} sources - List of source objects.
+         */
+        function renderStockResults(stocks, sources) {
+            let html = '<h3 class="text-xl font-bold text-green-400 mb-4 border-b border-gray-700 pb-2">Top 5 Picks Based on Live Market Analysis:</h3>';
+
+            stocks.forEach(stock => {
+                let colorClass;
+                switch (stock.volatilityLevel.toLowerCase()) {
+                    case 'high':
+                        colorClass = 'text-red-400 border-red-400';
+                        break;
+                    case 'medium':
+                        colorClass = 'text-amber-400 border-amber-400';
+                        break;
+                    case 'low':
+                        colorClass = 'text-green-400 border-green-400';
+                        break;
+                    default:
+                        colorClass = 'text-gray-400 border-gray-400';
+                }
+
+                html += `
+                    <div class="p-4 bg-gray-800 rounded-lg shadow-md border-l-4 ${stock.volatilityLevel.toLowerCase() === 'high' ? 'border-red-500' : 'border-indigo-500'}">
+                        <div class="flex justify-between items-start mb-1">
+                            <span class="text-2xl font-extrabold text-white">${stock.ticker.toUpperCase()}</span>
+                            <span class="px-3 py-1 text-xs font-semibold rounded-full border ${colorClass}">${stock.volatilityLevel} Volatility</span>
+                        </div>
+                        <p class="text-gray-300 mt-2">${stock.reason}</p>
+                    </div>
+                `;
+            });
+            
+            // Add Source Citations
+            if (sources.length > 0) {
+                html += '<div class="mt-6 p-4 bg-gray-800 rounded-lg border border-gray-700">';
+                html += '<h4 class="text-sm font-semibold text-gray-400 mb-2">Sources Analyzed:</h4>';
+                sources.slice(0, 5).forEach((source, index) => {
+                    html += `<p class="text-xs text-gray-500 truncate">${index + 1}. <a href="${source.uri}" target="_blank" class="text-indigo-400 hover:text-indigo-300">${source.title}</a></p>`;
+                });
+                html += '</div>';
+            }
+
+            stockRecommendationsEl.innerHTML = html;
+        }
+
+        // Expose function to global scope so HTML button can call it
+        window.fetchDayTradeStocks = fetchDayTradeStocks;
+
+    </script>
+
+</body>
+</html>
+
